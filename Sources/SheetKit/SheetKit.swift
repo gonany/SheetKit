@@ -17,7 +17,7 @@ public struct SheetKit {
     public func dismissAllSheets(animated flag: Bool = true, completion: (() -> Void)? = nil) {
         rootViewController?.dismiss(animated: flag, completion: completion)
     }
-
+    
     /// dismiss top sheet
     /// - Parameters:
     ///   - flag: Pass true to animate the transition.
@@ -25,7 +25,7 @@ public struct SheetKit {
     public func dismiss(animated flag: Bool = true, completion: (() -> Void)? = nil) {
         rootViewController?.topmostPresentingViewController?.dismiss(animated: flag, completion: completion)
     }
-
+    
     /// present seht
     /// - Parameters:
     ///   - controller: 从哪个UIViewController创建sheet。默认值即可
@@ -46,15 +46,22 @@ public struct SheetKit {
                                        content: () -> Content)
     {
         let viewController = controller == .rootController ? rootViewController?.topmostPresentedViewController : rootViewController?.topmostViewController
-
+        
         let contentViewController: UIViewController
-
+        
         switch style {
         case .sheet:
             contentViewController = MyUIHostingController(rootView: content(),onDisappear: onDisappear)
-        case .fullScreenCover:
+        case .fullScreenCover(let isOverlay, let transitionStyle):
             contentViewController = MyUIHostingController(rootView: content(),onDisappear: onDisappear)
             contentViewController.modalPresentationStyle = .fullScreen
+            if isOverlay {
+                contentViewController.providesPresentationContextTransitionStyle = true;
+                contentViewController.definesPresentationContext = true;
+                contentViewController.modalPresentationStyle = .overFullScreen
+                contentViewController.view.backgroundColor = .clear
+                contentViewController.modalTransitionStyle = transitionStyle
+            }
         case .bottomSheet:
             let configuration = BottomSheetConfiguration.default
             contentViewController = BottomSheetViewController(detents: configuration.detents,
@@ -80,22 +87,23 @@ public struct SheetKit {
                                                               onDisappear: onDisappear,
                                                               content: content())
         }
-
+        
         viewController?.present(contentViewController, animated: animated, completion: afterPresent)
+        return
     }
-
+    
     public init() {}
 }
 
 public extension SheetKit {
     var keyWindow: UIWindow? { UIApplication.shared.connectedScenes
-        .filter { $0.activationState == .foregroundActive }
-        .map { $0 as? UIWindowScene }
-        .compactMap { $0 }
-        .first?.windows
-        .filter { $0.isKeyWindow }.first
+            .filter { $0.activationState == .foregroundActive }
+            .map { $0 as? UIWindowScene }
+            .compactMap { $0 }
+            .first?.windows
+            .filter { $0.isKeyWindow }.first
     }
-
+    
     var rootViewController: UIViewController? {
         keyWindow?.rootViewController
     }
@@ -105,17 +113,17 @@ public extension SheetKit {
     /// Sheet 类型
     enum SheetStyle {
         case sheet
-        case fullScreenCover
+        case fullScreenCover(isOverlay: Bool = false, transitionStyle: UIModalTransitionStyle = .coverVertical)
         case bottomSheet
         case customBottomSheet
     }
-
+    
     /// 在哪个ViewController上添加sheet
     enum ControllerSource {
         case rootController
         case topController
     }
-
+    
     struct BottomSheetConfiguration {
         /// BottomSheet配置
         /// - Parameters:
@@ -142,7 +150,7 @@ public extension SheetKit {
             self.widthFollowsPreferredContentSizeWhenEdgeAttached = widthFollowsPreferredContentSizeWhenEdgeAttached
             self.preferredCornerRadius = preferredCornerRadius
         }
-
+        
         let detents: [UISheetPresentationController.Detent]
         let largestUndimmedDetentIdentifier: UISheetPresentationController.Detent.Identifier?
         let prefersGrabberVisible: Bool
@@ -150,7 +158,7 @@ public extension SheetKit {
         let prefersEdgeAttachedInCompactHeight: Bool
         let widthFollowsPreferredContentSizeWhenEdgeAttached: Bool
         let preferredCornerRadius: CGFloat?
-
+        
         static let `default` = BottomSheetConfiguration(detents: [.medium(), .large()],
                                                         largestUndimmedDetentIdentifier: nil,
                                                         prefersGrabberVisible: false,
@@ -179,13 +187,52 @@ final class MyUIHostingController<Content: View>: UIHostingController<Content> {
         super.viewDidDisappear(animated)
         onDisappear?()
     }
-
-    init(rootView: Content,onDisappear:(() -> Void)? = nil) {
+    
+    init(rootView: Content,onDisappear:(() -> Void)? = nil, ignoreSafeArea: Bool = false) {
         self.onDisappear = onDisappear
         super.init(rootView: rootView)
+        
+        if ignoreSafeArea {
+            disableSafeArea()
+        }
     }
-
+    
     @MainActor @objc required dynamic init?(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+}
+
+extension MyUIHostingController {
+    func disableSafeArea() {
+        guard let viewClass = object_getClass(view) else { return }
+        
+        let viewSubclassName = String(cString: class_getName(viewClass)).appending("_IgnoreSafeArea")
+        
+        if let viewSubclass = NSClassFromString(viewSubclassName) {
+            object_setClass(view, viewSubclass)
+        } else {
+            guard
+                let viewClassNameUtf8 = (viewSubclassName as NSString).utf8String,
+                let viewSubclass = objc_allocateClassPair(viewClass, viewClassNameUtf8, 0)
+            else {
+                return
+            }
+            
+            if let method = class_getInstanceMethod(UIView.self, #selector(getter: UIView.safeAreaInsets)) {
+                let safeAreaInsets: @convention(block) (AnyObject) -> UIEdgeInsets = { _ in
+                    return .zero
+                }
+                
+                class_addMethod(
+                    viewSubclass,
+                    #selector(getter: UIView.safeAreaInsets),
+                    imp_implementationWithBlock(safeAreaInsets),
+                    method_getTypeEncoding(method)
+                )
+            }
+            
+            objc_registerClassPair(viewSubclass)
+            object_setClass(view, viewSubclass)
+        }
     }
 }
